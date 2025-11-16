@@ -1,8 +1,10 @@
 import { defineConfig } from "vite";
 
-// If your repo is NOT <username>.github.io, GitHub Pages serves it under /<repo>.
-// Set base to "/<repo-name>/" so assets resolve correctly.
-// Example: base: "/csv-to-json-tool/"
+// GitHub Pages deploy base path (repo name). Adjust if publishing under user site.
 export default defineConfig({
-  base: "/csv-json-tool/"
+  base: "/csv-json-tool/",
+  server: {
+    port: 6767,
+    host: true // allow LAN access if needed
+  }
 });

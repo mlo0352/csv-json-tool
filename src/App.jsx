@@ -265,11 +265,37 @@ export default function App() {
   const [doUnmarshall, setDoUnmarshall] = useState(true);
   const [doInferTypes, setDoInferTypes] = useState(true);
   const [testResults, setTestResults] = useState([]);
+  // inputMode: 'csv' for CSV-to-JSON, 'ddb' for direct DynamoDB JSON unmarshalling
+  const [inputMode, setInputMode] = useState('csv');
   const fileInputRef = useRef(null);
 
   function handleConvert() {
     try {
       setStatus("");
+      if (inputMode === 'ddb') {
+        // Treat entire input as a single DynamoDB JSON object or an array of such objects
+        let raw = csv.trim();
+        if (!raw) {
+          setJson('[]');
+          setStatus('No input provided.');
+          return;
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (err) {
+          setJson('[]');
+          setStatus('Error parsing JSON: ' + (err.message || String(err)));
+          return;
+        }
+        // Allow single object or array of objects
+        const items = Array.isArray(parsed) ? parsed : [parsed];
+        const transformed = items.map(item => doUnmarshall ? unmarshallDeep(item) : item).map(item => doInferTypes ? coerceDeep(item) : item);
+        setJson(JSON.stringify(transformed, null, 2));
+        setStatus(`Unmarshalled ${transformed.length} DynamoDB object(s).`);
+        return;
+      }
+      // CSV mode
       const sample = csv.slice(0, 4000);
       const delim = autoDelim ? detectDelimiterByStructure(sample) : delimiter;
       setDelimiter(delim);
@@ -423,14 +449,30 @@ export default function App() {
       expected: [ { a: null, b: true, c: false, d: 123.45 } ]
     });
 
+    // 10) Direct DynamoDB JSON (single object) — should unmarshall when in DynamoDB mode
+    cases.push({
+      name: "direct DynamoDB JSON unmarshall",
+      directDDB: true,
+      input: '{"productId":{"S":"SKU123"},"details":{"M":{"name":{"S":"Widget"},"price":{"N":"19.99"},"tags":{"L":[{"S":"hardware"},{"S":"sale"}]}}},"inStock":{"BOOL":true}}',
+      expected: [{ productId: "SKU123", details: { name: "Widget", price: 19.99, tags: ["hardware", "sale"] }, inStock: true }]
+    });
+
     const results = [];
     for (const tc of cases) {
       try {
-        const delim = detectDelimiterByStructure(tc.input);
-        const rows = parseCSV(tc.input, delim);
-        const out = convertRowsToObjects(rows, { parseNestedJSON: tc.parseNested, doUnmarshall: tc.unmarshall, doInferTypes: tc.infer });
-        const pass = deepEqual(out, tc.expected);
-        results.push({ name: tc.name + ` (d=${JSON.stringify(delim)})`, pass, out, expected: tc.expected });
+        if (tc.directDDB) {
+          const parsed = JSON.parse(tc.input);
+          const items = Array.isArray(parsed) ? parsed : [parsed];
+          const transformed = items.map(unmarshallDeep).map(coerceDeep);
+          const pass = deepEqual(transformed, tc.expected);
+          results.push({ name: tc.name, pass, out: transformed, expected: tc.expected });
+        } else {
+          const delim = detectDelimiterByStructure(tc.input);
+          const rows = parseCSV(tc.input, delim);
+          const out = convertRowsToObjects(rows, { parseNestedJSON: tc.parseNested, doUnmarshall: tc.unmarshall, doInferTypes: tc.infer });
+          const pass = deepEqual(out, tc.expected);
+          results.push({ name: tc.name + ` (d=${JSON.stringify(delim)})`, pass, out, expected: tc.expected });
+        }
       } catch (err) {
         results.push({ name: tc.name, pass: false, error: String(err) });
       }
@@ -451,8 +493,32 @@ export default function App() {
           {/* Input side */}
           <div className="bg-white rounded-2xl shadow p-4 flex flex-col">
             <div className="flex items-center justify-between mb-2">
-              <h2 className="font-semibold">Paste CSV</h2>
+              <h2 className="font-semibold">{inputMode === 'csv' ? 'Paste CSV' : 'Paste DDBJ'}</h2>
               <div className="flex items-center gap-3 text-sm">
+                <div className="flex items-center gap-2 mr-4">
+                  <label className="inline-flex items-center gap-1">
+                    <input
+                      type="radio"
+                      name="mode"
+                      value="csv"
+                      className="accent-blue-600"
+                      checked={inputMode === 'csv'}
+                      onChange={() => setInputMode('csv')}
+                    />
+                    CSV
+                  </label>
+                  <label className="inline-flex items-center gap-1">
+                    <input
+                      type="radio"
+                      name="mode"
+                      value="ddb"
+                      className="accent-blue-600"
+                      checked={inputMode === 'ddb'}
+                      onChange={() => setInputMode('ddb')}
+                    />
+                    DDB JSON
+                  </label>
+                </div>
                 <label className="inline-flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -481,7 +547,7 @@ export default function App() {
             <textarea
               value={csv}
               onChange={e => setCsv(e.target.value)}
-              placeholder={`header1,header2,header3\nvalue1,"{""a"":1}",value3`}
+              placeholder={inputMode === 'csv' ? `header1,header2,header3\nvalue1,"{""a"":1}",value3` : '{"productId":{"S":"SKU123"},"details":{"M":{"name":{"S":"Widget"},"price":{"N":"19.99"},"tags":{"L":[{"S":"hardware"},{"S":"sale"}]}}},"inStock":{"BOOL":true}}'}
               className="flex-1 border rounded-xl p-3 font-mono text-sm min-h-[240px] resize-y"
             />
 
@@ -607,6 +673,7 @@ export default function App() {
             </p>
             <p>• Toggle <b>Unmarshall DynamoDB JSON</b> to convert objects like <code>{'{"S":"str"}'}</code>, <code>{'{"N":"123"}'}</code>, <code>{'{"L":[...]}'}</code>, or maps of AVs into plain JS.</p>
             <p>• Enable <b>Type inference</b> to coerce plain strings like <code>null</code>, <code>true</code>, <code>false</code>, or <code>123.45</code> into their native types (values already parsed from JSON/AV remain correctly typed).</p>
+            <p>• Switch to <b>DynamoDB JSON</b> mode to paste raw DynamoDB-formatted JSON (single object or an array) and unmarshall directly without needing CSV headers.</p>
           </div>
         </details>
       </div>
